@@ -2,6 +2,7 @@ pub trait FullDuplexExt<Word>: embedded_hal::spi::FullDuplex<Word>
 where
     Word: core::fmt::LowerHex + Copy + Default,
 {
+    #[inline]
     fn send_exchange(&mut self, word: Word) -> Result<(), Self::Error> {
         nb::block!(self.send(word))?;
         log::trace!("send {:#04x}", word);
@@ -9,6 +10,7 @@ where
         Ok(())
     }
 
+    #[inline]
     fn recv_exchange(&mut self) -> Result<Word, Self::Error> {
         nb::block!(self.send(Word::default()))?;
         let byte = nb::block!(self.read())?;

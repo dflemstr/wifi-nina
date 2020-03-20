@@ -1,274 +1,248 @@
 #![allow(dead_code)]
 
-use super::command;
-use super::param;
-use super::params;
-use super::transport;
+use crate::command;
+use crate::error;
+use crate::param;
+use crate::params;
+use crate::transport;
+use crate::types;
 use core::fmt;
-use embedded_hal::digital::v2::{InputPin, OutputPin};
+use core::time;
 
-#[derive(Debug, Eq, PartialEq)]
-pub struct Handler<E, GPIO0, BUSY, RESET, CS, DELAY> {
-    transport: transport::Transport<E, GPIO0, BUSY, RESET, CS, DELAY>,
+#[derive(Debug)]
+pub struct Handler<T> {
+    transport: T,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Socket(u8);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive)]
-#[repr(u8)]
-pub enum PinMode {
-    Input = 0,
-    Output = 1,
-    InputPullup = 2,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive)]
-#[repr(u8)]
-pub enum ProtocolMode {
-    Tcp = 0,
-    Udp = 1,
-    Tls = 2,
-    UdpMulticast = 3,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Error<ESPI, EGPIO> {
-    Transport(transport::Error<ESPI, EGPIO>),
-    SetNetwork,
-    SetPassphrase,
-    SetKey,
-    SetIpConfig,
-    SetDnsConfig,
-    SetHostname,
-    Disconnect,
-    StartScanNetworks,
-    StartClientByIp,
-    StopClient,
-    PinMode,
-    DigitalWrite,
-    AnalogWrite,
-    BadConnectionStatus(num_enum::TryFromPrimitiveError<ConnectionStatus>),
-    BadEncryptionType(num_enum::TryFromPrimitiveError<EncryptionType>),
-    BadTcpState(num_enum::TryFromPrimitiveError<TcpState>),
-    DataTooLong,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive)]
-#[repr(u8)]
-pub enum ConnectionStatus {
-    IdleStatus = 0,
-    NoSsidAvail = 1,
-    ScanCompleted = 2,
-    Connected = 3,
-    ConnectFailed = 4,
-    ConnectionLost = 5,
-    Disconnected = 6,
-    ApListening = 7,
-    ApConnected = 8,
-    ApFailed = 9,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive)]
-#[repr(u8)]
-pub enum TcpState {
-    Closed = 0,
-    Listen = 1,
-    SynSent = 2,
-    SynRcvd = 3,
-    Established = 4,
-    FinWait1 = 5,
-    FinWait2 = 6,
-    CloseWait = 7,
-    Closing = 8,
-    LastAck = 9,
-    TimeWait = 10,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive)]
-#[repr(u8)]
-pub enum EncryptionType {
-    Invalid = 0,
-    Auto = 1,
-    OpenSystem = 2,
-    SharedKey = 3,
-    Wpa = 4,
-    Wpa2 = 5,
-    WpaPsk = 6,
-    Wpa2Psk = 7,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct NetworkData {
-    ip: no_std_net::Ipv4Addr,
-    mask: no_std_net::Ipv4Addr,
-    gateway: no_std_net::Ipv4Addr,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct RemoteData {
-    ip: no_std_net::Ipv4Addr,
-    port: u32,
-}
-
-impl<EGPIO, GPIO0, BUSY, RESET, CS, DELAY> Handler<EGPIO, GPIO0, BUSY, RESET, CS, DELAY>
+impl<T> Handler<T>
 where
-    GPIO0: InputPin<Error = EGPIO>,
-    BUSY: InputPin<Error = EGPIO>,
-    RESET: OutputPin<Error = EGPIO>,
-    CS: OutputPin<Error = EGPIO>,
-    DELAY: FnMut(core::time::Duration),
+    T: transport::Transport,
 {
-    pub fn start(
-        gpio0: GPIO0,
-        busy: BUSY,
-        reset: RESET,
-        cs: CS,
-        delay: DELAY,
-    ) -> Result<Self, EGPIO> {
-        let transport = transport::Transport::start(gpio0, busy, reset, cs, delay)?;
-        Ok(Self { transport })
+    pub fn new(transport: T) -> Self {
+        Self { transport }
     }
 
-    pub fn get_connection_status<S, ESPI>(
+    pub fn get_connection_state(
         &mut self,
-        spi: &mut S,
-    ) -> Result<ConnectionStatus, Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
+    ) -> Result<types::ConnectionState, error::Error<T::Error>> {
         use core::convert::TryFrom;
 
-        let send_params = ();
         let mut recv_params = (0u8,);
 
-        self.handle_cmd(
-            spi,
-            command::Command::GetConnStatusCmd,
-            &send_params,
-            &mut recv_params,
-        )?;
+        self.handle_cmd(command::Command::GetConnStatusCmd, &(), &mut recv_params)?;
 
         let (status,) = recv_params;
-        let status = ConnectionStatus::try_from(status).map_err(Error::BadConnectionStatus)?;
+        let status =
+            types::ConnectionState::try_from(status).map_err(error::Error::BadConnectionStatus)?;
 
         Ok(status)
     }
 
-    pub fn get_firmware_version<S, ESPI>(
+    pub fn delay(&mut self, duration: time::Duration) -> Result<(), error::Error<T::Error>> {
+        self.transport
+            .delay(duration)
+            .map_err(error::Error::Transport)
+    }
+
+    pub fn get_firmware_version(
         &mut self,
-        spi: &mut S,
-        buf: &mut [u8],
-    ) -> Result<usize, Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
+    ) -> Result<arrayvec::ArrayVec<[u8; 16]>, error::Error<T::Error>> {
         let send_params = (0u8,);
-        let mut recv_params = (param::Short::new(buf),);
+        let mut recv_params = (param::NullTerminated::new(arrayvec::ArrayVec::new()),);
 
         self.handle_cmd(
-            spi,
             command::Command::GetFwVersionCmd,
             &send_params,
             &mut recv_params,
         )?;
 
-        Ok(recv_params.0.recv_len as usize)
+        let result = recv_params.0.into_inner();
+
+        Ok(result)
     }
 
-    pub fn get_network_data<S, ESPI>(
-        &mut self,
-        spi: &mut S,
-    ) -> Result<NetworkData, Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
+    pub fn get_mac_address(&mut self) -> Result<[u8; 6], error::Error<T::Error>> {
         let send_params = (0u8,);
-        let mut recv_params = (0u32, 0u32, 0u32);
+        let mut recv_params = (arrayvec::ArrayVec::new(),);
 
         self.handle_cmd(
-            spi,
-            command::Command::GetIpaddrCmd,
+            command::Command::GetMacaddrCmd,
             &send_params,
             &mut recv_params,
         )?;
 
-        let (ip, mask, gateway) = recv_params;
-        let ip = ip.into();
-        let mask = mask.into();
-        let gateway = gateway.into();
-
-        Ok(NetworkData { ip, mask, gateway })
+        Ok(recv_params.0.into_inner().unwrap())
     }
 
-    pub fn get_remote_data<S, ESPI>(
-        &mut self,
-        spi: &mut S,
-        socket: Socket,
-    ) -> Result<RemoteData, Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
-        let send_params = (socket.0,);
-        let mut recv_params = (0u32, 0u32);
-
-        self.handle_cmd(
-            spi,
-            command::Command::GetRemoteDataCmd,
-            &send_params,
-            &mut recv_params,
-        )?;
-
-        let (ip, port) = recv_params;
-        let ip = ip.into();
-
-        Ok(RemoteData { ip, port })
-    }
-
-    pub fn set_network<S, ESPI>(
-        &mut self,
-        spi: &mut S,
-        ssid: &str,
-    ) -> Result<(), Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
-        let send_params = (param::Short::new(ssid.as_bytes()),);
+    pub fn start_scan_networks(&mut self) -> Result<(), error::Error<T::Error>> {
         let mut recv_params = (0u8,);
 
-        self.handle_cmd(
-            spi,
-            command::Command::SetNetCmd,
-            &send_params,
-            &mut recv_params,
-        )?;
+        self.handle_cmd(command::Command::StartScanNetworks, &(), &mut recv_params)?;
 
         let (status,) = recv_params;
 
         if status == 1 {
             Ok(())
         } else {
-            Err(Error::SetNetwork)
+            Err(error::Error::StartScanNetworks)
         }
     }
 
-    pub fn set_passphrase<S, ESPI>(
+    pub fn get_scanned_networks(
         &mut self,
-        spi: &mut S,
-        ssid: &str,
-        passphrase: &str,
-    ) -> Result<(), Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
+    ) -> Result<arrayvec::ArrayVec<[arrayvec::ArrayVec<[u8; 32]>; 16]>, error::Error<T::Error>>
     {
+        let mut recv_params: arrayvec::ArrayVec<[arrayvec::ArrayVec<[u8; 32]>; 16]> =
+            arrayvec::ArrayVec::new();
+
+        self.handle_cmd(command::Command::ScanNetworks, &(), &mut recv_params)?;
+
+        Ok(recv_params)
+    }
+
+    pub fn get_scanned_network_rssi(&mut self, network: u8) -> Result<i32, error::Error<T::Error>> {
+        let send_params = (network,);
+        let mut recv_params = (param::Scalar::be(0u32),);
+
+        self.handle_cmd(
+            command::Command::GetIdxRssiCmd,
+            &send_params,
+            &mut recv_params,
+        )?;
+
+        let (rssi,) = recv_params;
+
+        Ok(rssi.into_inner() as i32)
+    }
+
+    pub fn get_scanned_network_encryption_type(
+        &mut self,
+        network: u8,
+    ) -> Result<types::EncryptionType, error::Error<T::Error>> {
+        use core::convert::TryFrom;
+
+        let send_params = (network,);
+        let mut recv_params = (0u8,);
+
+        self.handle_cmd(
+            command::Command::GetIdxEnctCmd,
+            &send_params,
+            &mut recv_params,
+        )?;
+
+        let (encryption_type,) = recv_params;
+
+        let encryption_type = types::EncryptionType::try_from(encryption_type)
+            .map_err(error::Error::BadEncryptionType)?;
+
+        Ok(encryption_type)
+    }
+
+    pub fn get_scanned_network_bssid(
+        &mut self,
+        network: u8,
+    ) -> Result<[u8; 6], error::Error<T::Error>> {
+        let send_params = (network,);
+        let mut recv_params = (arrayvec::ArrayVec::new(),);
+
+        self.handle_cmd(
+            command::Command::GetIdxBssid,
+            &send_params,
+            &mut recv_params,
+        )?;
+
+        let (bssid,) = recv_params;
+
+        Ok(bssid.into_inner().unwrap())
+    }
+
+    pub fn get_scanned_network_channel(
+        &mut self,
+        network: u8,
+    ) -> Result<u8, error::Error<T::Error>> {
+        let send_params = (network,);
+        let mut recv_params = (0u8,);
+
+        self.handle_cmd(
+            command::Command::GetIdxChannelCmd,
+            &send_params,
+            &mut recv_params,
+        )?;
+
+        let (channel,) = recv_params;
+
+        Ok(channel)
+    }
+
+    pub fn get_network_data(&mut self) -> Result<types::NetworkData, error::Error<T::Error>> {
+        let send_params = (0u8,);
+        let mut recv_params = (
+            param::Scalar::be(0u32),
+            param::Scalar::be(0u32),
+            param::Scalar::be(0u32),
+        );
+
+        self.handle_cmd(
+            command::Command::GetIpaddrCmd,
+            &send_params,
+            &mut recv_params,
+        )?;
+
+        let (ip, mask, gateway) = recv_params;
+        let ip = ip.into_inner().into();
+        let mask = mask.into_inner().into();
+        let gateway = gateway.into_inner().into();
+
+        Ok(types::NetworkData { ip, mask, gateway })
+    }
+
+    pub fn get_remote_data(
+        &mut self,
+        socket: types::Socket,
+    ) -> Result<types::RemoteData, error::Error<T::Error>> {
+        let send_params = (socket.0,);
+        let mut recv_params = (param::Scalar::be(0u32), param::Scalar::be(0u32));
+
+        self.handle_cmd(
+            command::Command::GetRemoteDataCmd,
+            &send_params,
+            &mut recv_params,
+        )?;
+
+        let (ip, port) = recv_params;
+        let ip = ip.into_inner().into();
+        let port = port.into_inner();
+
+        Ok(types::RemoteData { ip, port })
+    }
+
+    pub fn set_network(&mut self, ssid: &[u8]) -> Result<(), error::Error<T::Error>> {
+        let send_params = (param::NullTerminated::new(ssid),);
+        let mut recv_params = (0u8,);
+
+        self.handle_cmd(command::Command::SetNetCmd, &send_params, &mut recv_params)?;
+
+        let (status,) = recv_params;
+
+        if status == 1 {
+            Ok(())
+        } else {
+            Err(error::Error::SetNetwork)
+        }
+    }
+
+    pub fn set_passphrase(
+        &mut self,
+        ssid: &[u8],
+        passphrase: &[u8],
+    ) -> Result<(), error::Error<T::Error>> {
         let send_params = (
-            param::Short::new(ssid.as_bytes()),
-            param::Short::new(passphrase.as_bytes()),
+            param::NullTerminated::new(ssid),
+            param::NullTerminated::new(passphrase),
         );
         let mut recv_params = (0u8,);
 
         self.handle_cmd(
-            spi,
             command::Command::SetPassphraseCmd,
             &send_params,
             &mut recv_params,
@@ -279,64 +253,51 @@ where
         if status == 1 {
             Ok(())
         } else {
-            Err(Error::SetPassphrase)
+            Err(error::Error::SetPassphrase)
         }
     }
 
-    pub fn set_key<S, ESPI>(
+    pub fn set_key(
         &mut self,
-        spi: &mut S,
         ssid: &str,
         key_idx: u8,
         key: &[u8],
-    ) -> Result<(), Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
+    ) -> Result<(), error::Error<T::Error>> {
         let send_params = (
-            param::Short::new(ssid.as_bytes()),
+            param::NullTerminated::new(ssid.as_bytes()),
             key_idx,
-            param::Short::new(key),
+            // TODO: null terminate?
+            key,
         );
         let mut recv_params = (0u8,);
 
-        self.handle_cmd(
-            spi,
-            command::Command::SetKeyCmd,
-            &send_params,
-            &mut recv_params,
-        )?;
+        self.handle_cmd(command::Command::SetKeyCmd, &send_params, &mut recv_params)?;
 
         let (status,) = recv_params;
 
         if status == 1 {
             Ok(())
         } else {
-            Err(Error::SetKey)
+            Err(error::Error::SetKey)
         }
     }
 
-    pub fn config<S, ESPI>(
+    pub fn config(
         &mut self,
-        spi: &mut S,
         valid_params: u8,
         local_ip: no_std_net::Ipv4Addr,
         gateway: no_std_net::Ipv4Addr,
         subnet: no_std_net::Ipv4Addr,
-    ) -> Result<(), Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
+    ) -> Result<(), error::Error<T::Error>> {
         let send_params = (
             valid_params,
-            u32::from(local_ip),
-            u32::from(gateway),
-            u32::from(subnet),
+            param::Scalar::be(u32::from(local_ip)),
+            param::Scalar::be(u32::from(gateway)),
+            param::Scalar::be(u32::from(subnet)),
         );
         let mut recv_params = (0u8,);
 
         self.handle_cmd(
-            spi,
             command::Command::SetIpConfigCmd,
             &send_params,
             &mut recv_params,
@@ -347,25 +308,24 @@ where
         if status == 1 {
             Ok(())
         } else {
-            Err(Error::SetIpConfig)
+            Err(error::Error::SetIpConfig)
         }
     }
 
-    pub fn set_dns<S, ESPI>(
+    pub fn set_dns(
         &mut self,
-        spi: &mut S,
         valid_params: u8,
         dns_server1: no_std_net::Ipv4Addr,
         dns_server2: no_std_net::Ipv4Addr,
-    ) -> Result<(), Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
-        let send_params = (valid_params, u32::from(dns_server1), u32::from(dns_server2));
+    ) -> Result<(), error::Error<T::Error>> {
+        let send_params = (
+            valid_params,
+            param::Scalar::be(u32::from(dns_server1)),
+            param::Scalar::be(u32::from(dns_server2)),
+        );
         let mut recv_params = (0u8,);
 
         self.handle_cmd(
-            spi,
             command::Command::SetDnsConfigCmd,
             &send_params,
             &mut recv_params,
@@ -376,23 +336,15 @@ where
         if status == 1 {
             Ok(())
         } else {
-            Err(Error::SetDnsConfig)
+            Err(error::Error::SetDnsConfig)
         }
     }
 
-    pub fn set_hostname<S, ESPI>(
-        &mut self,
-        spi: &mut S,
-        hostname: &str,
-    ) -> Result<(), Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
-        let send_params = (param::Short::new(hostname.as_bytes()),);
+    pub fn set_hostname(&mut self, hostname: &str) -> Result<(), error::Error<T::Error>> {
+        let send_params = (param::NullTerminated::new(hostname.as_bytes()),);
         let mut recv_params = (0u8,);
 
         self.handle_cmd(
-            spi,
             command::Command::SetHostnameCmd,
             &send_params,
             &mut recv_params,
@@ -403,19 +355,15 @@ where
         if status == 1 {
             Ok(())
         } else {
-            Err(Error::SetHostname)
+            Err(error::Error::SetHostname)
         }
     }
 
-    pub fn disconnect<S, ESPI>(&mut self, spi: &mut S) -> Result<(), Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
+    pub fn disconnect(&mut self) -> Result<(), error::Error<T::Error>> {
         let send_params = (0u8,);
         let mut recv_params = (0u8,);
 
         self.handle_cmd(
-            spi,
             command::Command::DisconnectCmd,
             &send_params,
             &mut recv_params,
@@ -426,82 +374,47 @@ where
         if status == 1 {
             Ok(())
         } else {
-            Err(Error::Disconnect)
+            Err(error::Error::Disconnect)
         }
     }
 
-    pub fn get_mac_address<S, ESPI>(
+    pub fn get_current_ssid(
         &mut self,
-        spi: &mut S,
-        buf: &mut [u8],
-    ) -> Result<usize, Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
+    ) -> Result<arrayvec::ArrayVec<[u8; 32]>, error::Error<T::Error>> {
         let send_params = (0u8,);
-        let mut recv_params = (param::Short::new(buf),);
+        let mut recv_params = (arrayvec::ArrayVec::new(),);
 
         self.handle_cmd(
-            spi,
-            command::Command::GetMacaddrCmd,
-            &send_params,
-            &mut recv_params,
-        )?;
-
-        Ok(recv_params.0.recv_len as usize)
-    }
-
-    pub fn get_current_ssid<'a, S, ESPI>(
-        &mut self,
-        spi: &mut S,
-        buf: &mut [u8],
-    ) -> Result<usize, Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
-        let send_params = (0u8,);
-        let mut recv_params = (param::Short::new(buf),);
-
-        self.handle_cmd(
-            spi,
             command::Command::GetCurrSsidCmd,
             &send_params,
             &mut recv_params,
         )?;
 
-        Ok(recv_params.0.recv_len as usize)
+        let (ssid,) = recv_params;
+
+        Ok(ssid)
     }
 
-    pub fn get_current_bssid<S, ESPI>(
+    pub fn get_current_bssid(
         &mut self,
-        spi: &mut S,
-        buf: &mut [u8],
-    ) -> Result<usize, Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
+    ) -> Result<arrayvec::ArrayVec<[u8; 6]>, error::Error<T::Error>> {
         let send_params = (0u8,);
-        let mut recv_params = (param::Short::new(buf),);
+        let mut recv_params = (arrayvec::ArrayVec::new(),);
 
         self.handle_cmd(
-            spi,
             command::Command::GetCurrBssidCmd,
             &send_params,
             &mut recv_params,
         )?;
 
-        Ok(recv_params.0.recv_len as usize)
+        Ok(recv_params.0)
     }
 
-    pub fn get_current_rssi<S, ESPI>(&mut self, spi: &mut S) -> Result<i32, Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
+    pub fn get_current_rssi(&mut self) -> Result<i32, error::Error<T::Error>> {
         let send_params = (0u8,);
-        let mut recv_params = (0u32,);
+        let mut recv_params = (param::Scalar::be(0u32),);
 
         self.handle_cmd(
-            spi,
             command::Command::GetCurrRssiCmd,
             &send_params,
             &mut recv_params,
@@ -509,23 +422,18 @@ where
 
         let (rssi,) = recv_params;
 
-        Ok(rssi as i32)
+        Ok(rssi.into_inner() as i32)
     }
 
-    pub fn get_current_encryption_type<S, ESPI>(
+    pub fn get_current_encryption_type(
         &mut self,
-        spi: &mut S,
-    ) -> Result<EncryptionType, Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
+    ) -> Result<types::EncryptionType, error::Error<T::Error>> {
         use core::convert::TryFrom;
 
         let send_params = (0u8,);
         let mut recv_params = (0u8,);
 
         self.handle_cmd(
-            spi,
             command::Command::GetCurrEnctCmd,
             &send_params,
             &mut recv_params,
@@ -533,51 +441,28 @@ where
 
         let (encryption_type,) = recv_params;
 
-        let encryption_type =
-            EncryptionType::try_from(encryption_type).map_err(Error::BadEncryptionType)?;
+        let encryption_type = types::EncryptionType::try_from(encryption_type)
+            .map_err(error::Error::BadEncryptionType)?;
 
         Ok(encryption_type)
     }
 
-    pub fn start_scan_networks<S, ESPI>(&mut self, spi: &mut S) -> Result<(), Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
-        let send_params = ();
-        let mut recv_params = (0u8,);
-
-        self.handle_cmd(
-            spi,
-            command::Command::StartScanNetworks,
-            &send_params,
-            &mut recv_params,
-        )?;
-
-        let (status,) = recv_params;
-
-        if status == 1 {
-            Ok(())
-        } else {
-            Err(Error::StartScanNetworks)
-        }
-    }
-
-    pub fn start_client_by_ip<S, ESPI>(
+    pub fn start_client_by_ip(
         &mut self,
-        spi: &mut S,
         ip: no_std_net::Ipv4Addr,
         port: u16,
-        socket: Socket,
-        protocol_mode: ProtocolMode,
-    ) -> Result<(), Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
-        let send_params = (u32::from(ip), port, socket.0, u8::from(protocol_mode));
+        socket: types::Socket,
+        protocol_mode: types::ProtocolMode,
+    ) -> Result<(), error::Error<T::Error>> {
+        let send_params = (
+            param::Scalar::be(u32::from(ip)),
+            param::Scalar::be(port),
+            socket.0,
+            u8::from(protocol_mode),
+        );
         let mut recv_params = (0u8,);
 
         self.handle_cmd(
-            spi,
             command::Command::StartClientTcpCmd,
             &send_params,
             &mut recv_params,
@@ -588,23 +473,15 @@ where
         if status == 1 {
             Ok(())
         } else {
-            Err(Error::StartClientByIp)
+            Err(error::Error::StartClientByIp)
         }
     }
 
-    pub fn stop_client<S, ESPI>(
-        &mut self,
-        spi: &mut S,
-        socket: Socket,
-    ) -> Result<(), Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
+    pub fn stop_client(&mut self, socket: types::Socket) -> Result<(), error::Error<T::Error>> {
         let send_params = (socket.0,);
         let mut recv_params = (0u8,);
 
         self.handle_cmd(
-            spi,
             command::Command::StopClientTcpCmd,
             &send_params,
             &mut recv_params,
@@ -615,49 +492,36 @@ where
         if status == 1 {
             Ok(())
         } else {
-            Err(Error::StopClient)
+            Err(error::Error::StopClient)
         }
     }
 
-    pub fn get_client_state<S, ESPI>(
+    pub fn get_client_state(
         &mut self,
-        spi: &mut S,
-        socket: Socket,
-    ) -> Result<TcpState, Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
+        socket: types::Socket,
+    ) -> Result<types::TcpState, error::Error<T::Error>> {
         use core::convert::TryFrom;
 
         let send_params = (socket.0,);
         let mut recv_params = (0u8,);
 
         self.handle_cmd(
-            spi,
             command::Command::GetClientStateTcpCmd,
             &send_params,
             &mut recv_params,
         )?;
 
         let (state,) = recv_params;
-        let state = TcpState::try_from(state).map_err(Error::BadTcpState)?;
+        let state = types::TcpState::try_from(state).map_err(error::Error::BadTcpState)?;
 
         Ok(state)
     }
 
-    pub fn avail_data<S, ESPI>(
-        &mut self,
-        spi: &mut S,
-        socket: Socket,
-    ) -> Result<u16, Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
+    pub fn avail_data(&mut self, socket: types::Socket) -> Result<u16, error::Error<T::Error>> {
         let send_params = (socket.0,);
-        let mut recv_params = (0u16,);
+        let mut recv_params = (param::Scalar::le(0u16),);
 
         self.handle_cmd(
-            spi,
             command::Command::AvailDataTcpCmd,
             &send_params,
             &mut recv_params,
@@ -665,45 +529,39 @@ where
 
         let (data,) = recv_params;
 
-        Ok(data)
+        Ok(data.into_inner())
     }
 
-    pub fn get_data_buf<S, ESPI>(
+    pub fn get_data_buf(
         &mut self,
-        spi: &mut S,
-        socket: Socket,
-        data: &mut [u8],
-    ) -> Result<usize, Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
-        let send_params = (socket.0, data.len() as u16);
-        let mut recv_params = (param::Long::new(data),);
+        socket: types::Socket,
+        buf: &mut [u8],
+    ) -> Result<usize, error::Error<T::Error>> {
+        use core::convert::TryFrom;
+        let send_params = (
+            socket.0,
+            param::Scalar::le(u16::try_from(buf.len()).unwrap()),
+        );
+        let mut recv_params = (buf,);
 
-        self.handle_cmd(
-            spi,
+        self.handle_long_send_long_recv_cmd(
             command::Command::GetDatabufTcpCmd,
             &send_params,
             &mut recv_params,
         )?;
 
-        Ok(recv_params.0.recv_len as usize)
+        Ok(recv_params.0.len())
     }
 
-    pub fn send_data<'a, S, ESPI>(
+    pub fn send_data(
         &mut self,
-        spi: &mut S,
-        socket: Socket,
+        socket: types::Socket,
         data: &[u8],
-    ) -> Result<usize, Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
-        let send_params = (socket.0, param::Long::new(data));
-        let mut recv_params = (0u16,);
+    ) -> Result<usize, error::Error<T::Error>> {
+        let send_params = (socket.0, &data);
+        let mut recv_params = (param::Scalar::le(0u16),);
 
-        self.handle_cmd(
-            spi,
+        self.handle_long_send_cmd(
             command::Command::SendDataTcpCmd,
             &send_params,
             &mut recv_params,
@@ -711,44 +569,15 @@ where
 
         let (len,) = recv_params;
 
-        Ok(len as usize)
+        Ok(len.into_inner() as usize)
     }
 
-    pub fn get_socket<S, ESPI>(&mut self, spi: &mut S) -> Result<Socket, Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
-        let send_params = ();
+    pub fn check_data_sent(&mut self, socket: types::Socket) -> Result<(), error::Error<T::Error>> {
+        let send_params = (socket.0,);
         let mut recv_params = (0u8,);
 
         self.handle_cmd(
-            spi,
-            command::Command::GetSocketCmd,
-            &send_params,
-            &mut recv_params,
-        )?;
-
-        let (socket,) = recv_params;
-        let socket = Socket(socket);
-
-        Ok(socket)
-    }
-
-    pub fn pin_mode<S, ESPI>(
-        &mut self,
-        spi: &mut S,
-        pin: u8,
-        mode: PinMode,
-    ) -> Result<(), Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
-        let send_params = (pin, u8::from(mode));
-        let mut recv_params = (0u8,);
-
-        self.handle_cmd(
-            spi,
-            command::Command::SetPinMode,
+            command::Command::DataSentTcpCmd,
             &send_params,
             &mut recv_params,
         )?;
@@ -758,24 +587,45 @@ where
         if status == 1 {
             Ok(())
         } else {
-            Err(Error::PinMode)
+            Err(error::Error::CheckDataSent)
         }
     }
 
-    pub fn digital_write<S, ESPI>(
+    pub fn get_socket(&mut self) -> Result<types::Socket, error::Error<T::Error>> {
+        let mut recv_params = (0u8,);
+
+        self.handle_cmd(command::Command::GetSocketCmd, &(), &mut recv_params)?;
+
+        let (socket,) = recv_params;
+        let socket = types::Socket(socket);
+
+        Ok(socket)
+    }
+
+    pub fn pin_mode(
         &mut self,
-        spi: &mut S,
         pin: u8,
-        value: u8,
-    ) -> Result<(), Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
+        mode: types::PinMode,
+    ) -> Result<(), error::Error<T::Error>> {
+        let send_params = (pin, u8::from(mode));
+        let mut recv_params = (0u8,);
+
+        self.handle_cmd(command::Command::SetPinMode, &send_params, &mut recv_params)?;
+
+        let (status,) = recv_params;
+
+        if status == 1 {
+            Ok(())
+        } else {
+            Err(error::Error::PinMode)
+        }
+    }
+
+    pub fn digital_write(&mut self, pin: u8, value: u8) -> Result<(), error::Error<T::Error>> {
         let send_params = (pin, value);
         let mut recv_params = (0u8,);
 
         self.handle_cmd(
-            spi,
             command::Command::SetDigitalWrite,
             &send_params,
             &mut recv_params,
@@ -786,24 +636,15 @@ where
         if status == 1 {
             Ok(())
         } else {
-            Err(Error::DigitalWrite)
+            Err(error::Error::DigitalWrite)
         }
     }
 
-    pub fn analog_write<S, ESPI>(
-        &mut self,
-        spi: &mut S,
-        pin: u8,
-        value: u8,
-    ) -> Result<(), Error<ESPI, EGPIO>>
-    where
-        S: embedded_hal::spi::FullDuplex<u8, Error = ESPI>,
-    {
+    pub fn analog_write(&mut self, pin: u8, value: u8) -> Result<(), error::Error<T::Error>> {
         let send_params = (pin, value);
         let mut recv_params = (0u8,);
 
         self.handle_cmd(
-            spi,
             command::Command::SetAnalogWrite,
             &send_params,
             &mut recv_params,
@@ -814,24 +655,52 @@ where
         if status == 1 {
             Ok(())
         } else {
-            Err(Error::AnalogWrite)
+            Err(error::Error::AnalogWrite)
         }
     }
 
-    fn handle_cmd<S, SP, RP>(
+    fn handle_cmd<SP, RP>(
         &mut self,
-        spi: &mut S,
         command: command::Command,
         send_params: &SP,
         recv_params: &mut RP,
-    ) -> Result<(), Error<S::Error, EGPIO>>
+    ) -> Result<(), error::Error<T::Error>>
     where
         SP: params::SendParams + fmt::Debug,
         RP: params::RecvParams + fmt::Debug,
-        S: embedded_hal::spi::FullDuplex<u8>,
     {
         self.transport
-            .handle_cmd(spi, command, send_params, recv_params)
-            .map_err(Error::Transport)
+            .handle_cmd(command, send_params, recv_params, false, false)
+            .map_err(error::Error::Transport)
+    }
+
+    fn handle_long_send_cmd<SP, RP>(
+        &mut self,
+        command: command::Command,
+        send_params: &SP,
+        recv_params: &mut RP,
+    ) -> Result<(), error::Error<T::Error>>
+    where
+        SP: params::SendParams + fmt::Debug,
+        RP: params::RecvParams + fmt::Debug,
+    {
+        self.transport
+            .handle_cmd(command, send_params, recv_params, true, false)
+            .map_err(error::Error::Transport)
+    }
+
+    fn handle_long_send_long_recv_cmd<SP, RP>(
+        &mut self,
+        command: command::Command,
+        send_params: &SP,
+        recv_params: &mut RP,
+    ) -> Result<(), error::Error<T::Error>>
+    where
+        SP: params::SendParams + fmt::Debug,
+        RP: params::RecvParams + fmt::Debug,
+    {
+        self.transport
+            .handle_cmd(command, send_params, recv_params, true, true)
+            .map_err(error::Error::Transport)
     }
 }

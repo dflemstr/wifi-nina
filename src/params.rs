@@ -1,39 +1,51 @@
+use super::full_duplex::FullDuplexExt as _;
 use super::param;
+use crate::param::SendParam;
 
 pub trait SendParams {
-    const LEN: u8;
+    fn len(&self, long: bool) -> usize {
+        self.param_len(long) + if long { 2 } else { 1 }
+    }
 
-    fn send<S>(&self, spi: &mut S) -> Result<(), S::Error>
+    fn param_len(&self, long: bool) -> usize;
+
+    fn send<S>(&self, spi: &mut S, long: bool) -> Result<(), S::Error>
     where
         S: embedded_hal::spi::FullDuplex<u8>;
 }
 
 pub trait RecvParams {
-    const LEN: u8;
-
-    fn recv<S>(&mut self, spi: &mut S) -> Result<(), S::Error>
+    fn recv<S>(&mut self, spi: &mut S, long: bool) -> Result<(), S::Error>
     where
         S: embedded_hal::spi::FullDuplex<u8>;
 }
 
 impl SendParams for () {
-    const LEN: u8 = 0;
+    fn param_len(&self, _long: bool) -> usize {
+        0
+    }
 
-    fn send<S>(&self, _spi: &mut S) -> Result<(), S::Error>
+    fn send<S>(&self, spi: &mut S, long: bool) -> Result<(), S::Error>
     where
         S: embedded_hal::spi::FullDuplex<u8>,
     {
+        if long {
+            spi.send_exchange(0)?;
+        }
+        spi.send_exchange(0)?;
         Ok(())
     }
 }
 
 impl RecvParams for () {
-    const LEN: u8 = 0;
-
-    fn recv<S>(&mut self, _spi: &mut S) -> Result<(), S::Error>
+    fn recv<S>(&mut self, spi: &mut S, long: bool) -> Result<(), S::Error>
     where
         S: embedded_hal::spi::FullDuplex<u8>,
     {
+        if long {
+            assert_eq!(0, spi.recv_exchange()?);
+        }
+        assert_eq!(0, spi.recv_exchange()?);
         Ok(())
     }
 }
@@ -42,14 +54,20 @@ impl<A> SendParams for (A,)
 where
     A: param::SendParam,
 {
-    const LEN: u8 = 1;
+    fn param_len(&self, long: bool) -> usize {
+        let (a,) = self;
+        a.len_length_delimited(long)
+    }
 
-    fn send<S>(&self, spi: &mut S) -> Result<(), S::Error>
+    fn send<S>(&self, spi: &mut S, long: bool) -> Result<(), S::Error>
     where
         S: embedded_hal::spi::FullDuplex<u8>,
     {
         let (a,) = self;
-        a.send(spi)?;
+        spi.send_exchange(1)?;
+        log::trace!("param 0");
+        a.send_length_delimited(spi, long)?;
+        log::trace!("end");
         Ok(())
     }
 }
@@ -58,14 +76,15 @@ impl<A> RecvParams for (A,)
 where
     A: param::RecvParam,
 {
-    const LEN: u8 = 1;
-
-    fn recv<S>(&mut self, spi: &mut S) -> Result<(), S::Error>
+    fn recv<S>(&mut self, spi: &mut S, long: bool) -> Result<(), S::Error>
     where
         S: embedded_hal::spi::FullDuplex<u8>,
     {
         let (a,) = self;
-        a.recv(spi)?;
+        assert_eq!(1, spi.recv_exchange()?);
+        log::trace!("param 0");
+        a.recv_length_delimited(spi, long)?;
+        log::trace!("end");
         Ok(())
     }
 }
@@ -75,15 +94,21 @@ where
     A: param::SendParam,
     B: param::SendParam,
 {
-    const LEN: u8 = 2;
-
-    fn send<S>(&self, spi: &mut S) -> Result<(), S::Error>
+    fn param_len(&self, long: bool) -> usize {
+        let (a, b) = self;
+        a.len_length_delimited(long) + b.len_length_delimited(long)
+    }
+    fn send<S>(&self, spi: &mut S, long: bool) -> Result<(), S::Error>
     where
         S: embedded_hal::spi::FullDuplex<u8>,
     {
         let (a, b) = self;
-        a.send(spi)?;
-        b.send(spi)?;
+        spi.send_exchange(2)?;
+        log::trace!("param 0");
+        a.send_length_delimited(spi, long)?;
+        log::trace!("param 1");
+        b.send_length_delimited(spi, long)?;
+        log::trace!("end");
         Ok(())
     }
 }
@@ -93,15 +118,17 @@ where
     A: param::RecvParam,
     B: param::RecvParam,
 {
-    const LEN: u8 = 2;
-
-    fn recv<S>(&mut self, spi: &mut S) -> Result<(), S::Error>
+    fn recv<S>(&mut self, spi: &mut S, long: bool) -> Result<(), S::Error>
     where
         S: embedded_hal::spi::FullDuplex<u8>,
     {
         let (a, b) = self;
-        a.recv(spi)?;
-        b.recv(spi)?;
+        assert_eq!(2, spi.recv_exchange()?);
+        log::trace!("param 0");
+        a.recv_length_delimited(spi, long)?;
+        log::trace!("param 1");
+        b.recv_length_delimited(spi, long)?;
+        log::trace!("end");
         Ok(())
     }
 }
@@ -112,16 +139,24 @@ where
     B: param::SendParam,
     C: param::SendParam,
 {
-    const LEN: u8 = 3;
+    fn param_len(&self, long: bool) -> usize {
+        let (a, b, c) = self;
+        a.len_length_delimited(long) + b.len_length_delimited(long) + c.len_length_delimited(long)
+    }
 
-    fn send<S>(&self, spi: &mut S) -> Result<(), S::Error>
+    fn send<S>(&self, spi: &mut S, long: bool) -> Result<(), S::Error>
     where
         S: embedded_hal::spi::FullDuplex<u8>,
     {
         let (a, b, c) = self;
-        a.send(spi)?;
-        b.send(spi)?;
-        c.send(spi)?;
+        spi.send_exchange(3)?;
+        log::trace!("param 0");
+        a.send_length_delimited(spi, long)?;
+        log::trace!("param 1");
+        b.send_length_delimited(spi, long)?;
+        log::trace!("param 2");
+        c.send_length_delimited(spi, long)?;
+        log::trace!("end");
         Ok(())
     }
 }
@@ -132,16 +167,19 @@ where
     B: param::RecvParam,
     C: param::RecvParam,
 {
-    const LEN: u8 = 3;
-
-    fn recv<S>(&mut self, spi: &mut S) -> Result<(), S::Error>
+    fn recv<S>(&mut self, spi: &mut S, long: bool) -> Result<(), S::Error>
     where
         S: embedded_hal::spi::FullDuplex<u8>,
     {
         let (a, b, c) = self;
-        a.recv(spi)?;
-        b.recv(spi)?;
-        c.recv(spi)?;
+        assert_eq!(3, spi.recv_exchange()?);
+        log::trace!("param 0");
+        a.recv_length_delimited(spi, long)?;
+        log::trace!("param 1");
+        b.recv_length_delimited(spi, long)?;
+        log::trace!("param 2");
+        c.recv_length_delimited(spi, long)?;
+        log::trace!("end");
         Ok(())
     }
 }
@@ -153,17 +191,29 @@ where
     C: param::SendParam,
     D: param::SendParam,
 {
-    const LEN: u8 = 4;
+    fn param_len(&self, long: bool) -> usize {
+        let (a, b, c, d) = self;
+        a.len_length_delimited(long)
+            + b.len_length_delimited(long)
+            + c.len_length_delimited(long)
+            + d.len_length_delimited(long)
+    }
 
-    fn send<S>(&self, spi: &mut S) -> Result<(), S::Error>
+    fn send<S>(&self, spi: &mut S, long: bool) -> Result<(), S::Error>
     where
         S: embedded_hal::spi::FullDuplex<u8>,
     {
         let (a, b, c, d) = self;
-        a.send(spi)?;
-        b.send(spi)?;
-        c.send(spi)?;
-        d.send(spi)?;
+        spi.send_exchange(4)?;
+        log::trace!("param 0");
+        a.send_length_delimited(spi, long)?;
+        log::trace!("param 1");
+        b.send_length_delimited(spi, long)?;
+        log::trace!("param 2");
+        c.send_length_delimited(spi, long)?;
+        log::trace!("param 3");
+        d.send_length_delimited(spi, long)?;
+        log::trace!("end");
         Ok(())
     }
 }
@@ -175,17 +225,21 @@ where
     C: param::RecvParam,
     D: param::RecvParam,
 {
-    const LEN: u8 = 4;
-
-    fn recv<S>(&mut self, spi: &mut S) -> Result<(), S::Error>
+    fn recv<S>(&mut self, spi: &mut S, long: bool) -> Result<(), S::Error>
     where
         S: embedded_hal::spi::FullDuplex<u8>,
     {
         let (a, b, c, d) = self;
-        a.recv(spi)?;
-        b.recv(spi)?;
-        c.recv(spi)?;
-        d.recv(spi)?;
+        assert_eq!(4, spi.recv_exchange()?);
+        log::trace!("param 0");
+        a.recv_length_delimited(spi, long)?;
+        log::trace!("param 1");
+        b.recv_length_delimited(spi, long)?;
+        log::trace!("param 2");
+        c.recv_length_delimited(spi, long)?;
+        log::trace!("param 3");
+        d.recv_length_delimited(spi, long)?;
+        log::trace!("end");
         Ok(())
     }
 }
@@ -198,18 +252,32 @@ where
     D: param::SendParam,
     E: param::SendParam,
 {
-    const LEN: u8 = 5;
+    fn param_len(&self, long: bool) -> usize {
+        let (a, b, c, d, e) = self;
+        a.len_length_delimited(long)
+            + b.len_length_delimited(long)
+            + c.len_length_delimited(long)
+            + d.len_length_delimited(long)
+            + e.len_length_delimited(long)
+    }
 
-    fn send<S>(&self, spi: &mut S) -> Result<(), S::Error>
+    fn send<S>(&self, spi: &mut S, long: bool) -> Result<(), S::Error>
     where
         S: embedded_hal::spi::FullDuplex<u8>,
     {
         let (a, b, c, d, e) = self;
-        a.send(spi)?;
-        b.send(spi)?;
-        c.send(spi)?;
-        d.send(spi)?;
-        e.send(spi)?;
+        spi.send_exchange(5)?;
+        log::trace!("param 0");
+        a.send_length_delimited(spi, long)?;
+        log::trace!("param 1");
+        b.send_length_delimited(spi, long)?;
+        log::trace!("param 2");
+        c.send_length_delimited(spi, long)?;
+        log::trace!("param 3");
+        d.send_length_delimited(spi, long)?;
+        log::trace!("param 4");
+        e.send_length_delimited(spi, long)?;
+        log::trace!("end");
         Ok(())
     }
 }
@@ -222,18 +290,71 @@ where
     D: param::RecvParam,
     E: param::RecvParam,
 {
-    const LEN: u8 = 5;
-
-    fn recv<S>(&mut self, spi: &mut S) -> Result<(), S::Error>
+    fn recv<S>(&mut self, spi: &mut S, long: bool) -> Result<(), S::Error>
     where
         S: embedded_hal::spi::FullDuplex<u8>,
     {
         let (a, b, c, d, e) = self;
-        a.recv(spi)?;
-        b.recv(spi)?;
-        c.recv(spi)?;
-        d.recv(spi)?;
-        e.recv(spi)?;
+        assert_eq!(5, spi.recv_exchange()?);
+        log::trace!("param 0");
+        a.recv_length_delimited(spi, long)?;
+        log::trace!("param 1");
+        b.recv_length_delimited(spi, long)?;
+        log::trace!("param 2");
+        c.recv_length_delimited(spi, long)?;
+        log::trace!("param 3");
+        d.recv_length_delimited(spi, long)?;
+        log::trace!("param 4");
+        e.recv_length_delimited(spi, long)?;
+        log::trace!("end");
+        Ok(())
+    }
+}
+
+impl<A> SendParams for arrayvec::ArrayVec<A>
+where
+    A: arrayvec::Array,
+    A::Item: param::SendParam,
+{
+    fn param_len(&self, long: bool) -> usize {
+        self.iter().map(|p| p.len_length_delimited(long)).sum()
+    }
+
+    fn send<S>(&self, spi: &mut S, long: bool) -> Result<(), S::Error>
+    where
+        S: embedded_hal::spi::FullDuplex<u8>,
+    {
+        use core::convert::TryFrom;
+
+        spi.send_exchange(u8::try_from(self.len()).unwrap())?;
+        for (i, item) in self.iter().enumerate() {
+            log::trace!("param {}", i);
+            item.send_length_delimited(spi, long)?;
+        }
+        log::trace!("end");
+        Ok(())
+    }
+}
+
+impl<A> RecvParams for arrayvec::ArrayVec<A>
+where
+    A: arrayvec::Array,
+    A::Item: param::RecvParam + Default,
+{
+    fn recv<S>(&mut self, spi: &mut S, long: bool) -> Result<(), S::Error>
+    where
+        S: embedded_hal::spi::FullDuplex<u8>,
+    {
+        use crate::param::RecvParam;
+
+        let len = spi.recv_exchange()?;
+        for i in 0..len {
+            log::trace!("param {}", i);
+            let mut item: <A as arrayvec::Array>::Item = Default::default();
+            item.recv_length_delimited(spi, long)?;
+            self.push(item);
+        }
+        log::trace!("end");
         Ok(())
     }
 }
