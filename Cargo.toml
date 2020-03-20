@@ -3,6 +3,11 @@ name = "wifi-nina"
 version = "0.1.0"
 authors = ["David Flemström <david.flemstrom@gmail.com>"]
 edition = "2018"
+description = "An embedded driver for ublox NINA-W10-based WiFi boards (using ESP32), present on some Arduinos, or using the Adafruit AirLift series of chips"
+repository = "https://github.com/dflemstr/wifi-nina/"
+license = "MIT OR Apache-2.0"
+keywords = ["wifi", "embedded", "airlift", "esp32", "embedded-hal-driver"]
+categories = ["embedded", "hardware-support", "no-std"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
