@@ -1,6 +1,6 @@
 [package]
 name = "wifi-nina"
-version = "0.1.1"
+version = "0.1.2-alpha.0"
 authors = ["David Flemström <david.flemstrom@gmail.com>"]
 edition = "2018"
 description = "An embedded driver for ublox NINA-W10-based WiFi boards (using ESP32), present on some Arduinos, or using the Adafruit AirLift series of chips"
