@@ -25,26 +25,20 @@ impl SendParams for () {
         0
     }
 
-    fn send<S>(&self, spi: &mut S, long: bool) -> Result<(), S::Error>
+    fn send<S>(&self, spi: &mut S, _long: bool) -> Result<(), S::Error>
     where
         S: embedded_hal::spi::FullDuplex<u8>,
     {
-        if long {
-            spi.send_exchange(0)?;
-        }
         spi.send_exchange(0)?;
         Ok(())
     }
 }
 
 impl RecvParams for () {
-    fn recv<S>(&mut self, spi: &mut S, long: bool) -> Result<(), S::Error>
+    fn recv<S>(&mut self, spi: &mut S, _long: bool) -> Result<(), S::Error>
     where
         S: embedded_hal::spi::FullDuplex<u8>,
     {
-        if long {
-            assert_eq!(0, spi.recv_exchange()?);
-        }
         assert_eq!(0, spi.recv_exchange()?);
         Ok(())
     }

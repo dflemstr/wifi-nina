@@ -1,3 +1,5 @@
+use core::fmt;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Config<'a> {
     Station(StationConfig<'a>),
@@ -106,4 +108,47 @@ pub struct NetworkData {
 pub struct RemoteData {
     pub ip: no_std_net::Ipv4Addr,
     pub port: u32,
+}
+
+impl fmt::Display for ScannedNetwork {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use itertools::Itertools;
+        if let Ok(ssid) = core::str::from_utf8(&self.ssid[..]) {
+            write!(
+                f,
+                "{:32} {:>8} {:3}dBm ch {:<2} [{:02x}]",
+                ssid,
+                self.encryption_type,
+                self.rssi,
+                self.channel,
+                self.bssid.iter().format(":")
+            )
+        } else {
+            write!(
+                f,
+                "{:64x} {:>8} {:3}dBm ch {:<2} [{:02x}]",
+                self.ssid.iter().format(""),
+                self.encryption_type,
+                self.rssi,
+                self.channel,
+                self.bssid.iter().format(":")
+            )
+        }
+    }
+}
+
+impl fmt::Display for EncryptionType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let string = match *self {
+            EncryptionType::Invalid => "???",
+            EncryptionType::Auto => "Auto",
+            EncryptionType::OpenSystem => "Open",
+            EncryptionType::SharedKey => "PSK",
+            EncryptionType::Wpa => "WPA",
+            EncryptionType::Wpa2 => "WPA2",
+            EncryptionType::WpaPsk => "WPA PSK",
+            EncryptionType::Wpa2Psk => "WPA2 PSK",
+        };
+        f.pad(string)
+    }
 }

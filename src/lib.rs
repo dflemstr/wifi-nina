@@ -4,6 +4,7 @@ use core::marker;
 use core::time;
 
 mod command;
+mod encoding;
 mod error;
 mod full_duplex;
 mod handler;
@@ -14,6 +15,8 @@ pub mod types;
 
 pub use error::Error;
 
+const BUFFER_CAPACITY: usize = 4096;
+
 #[derive(Debug)]
 pub struct Wifi<T> {
     handler: handler::Handler<T>,
@@ -23,6 +26,8 @@ pub struct Wifi<T> {
 #[derive(Debug)]
 pub struct Client<T> {
     socket: types::Socket,
+    buffer_offset: usize,
+    buffer: arrayvec::ArrayVec<[u8; BUFFER_CAPACITY]>,
     phantom: marker::PhantomData<T>,
 }
 
@@ -119,21 +124,19 @@ where
             .get_scanned_networks()?
             .into_iter()
             .enumerate()
-            .map(move |(_i, ssid)| {
-                /*
+            .map(move |(i, ssid)| {
                 let i = i as u8;
-                let rssi = self.handler.get_scanned_network_rssi(spi, i)?;
-                let encryption_type = self.handler.get_scanned_network_encryption_type(spi, i)?;
-                let bssid = self.handler.get_scanned_network_bssid(spi, i)?;
-                let channel = self.handler.get_scanned_network_channel(spi, i)?;
-                */
+                let rssi = self.handler.get_scanned_network_rssi(i)?;
+                let encryption_type = self.handler.get_scanned_network_encryption_type(i)?;
+                let bssid = self.handler.get_scanned_network_bssid(i)?;
+                let channel = self.handler.get_scanned_network_channel(i)?;
 
                 Ok(types::ScannedNetwork {
                     ssid,
-                    rssi: 0,
-                    encryption_type: types::EncryptionType::Auto,
-                    bssid: [0; 6],
-                    channel: 0,
+                    rssi,
+                    encryption_type,
+                    bssid,
+                    channel,
                 })
             }))
     }
@@ -154,10 +157,25 @@ where
         self.handler.get_current_encryption_type()
     }
 
+    pub fn resolve(
+        &mut self,
+        hostname: &str,
+    ) -> Result<no_std_net::Ipv4Addr, error::Error<T::Error>> {
+        self.handler.request_host_by_name(hostname)?;
+        self.handler.get_host_by_name()
+    }
+
     pub fn new_client(&mut self) -> Result<Client<T>, error::Error<T::Error>> {
         let socket = self.handler.get_socket()?;
+        let buffer_offset = 0;
+        let buffer = arrayvec::ArrayVec::new();
         let phantom = marker::PhantomData;
-        Ok(Client { socket, phantom })
+        Ok(Client {
+            socket,
+            buffer_offset,
+            buffer,
+            phantom,
+        })
     }
 }
 
@@ -208,8 +226,23 @@ where
         wifi: &mut Wifi<T>,
         data: &mut [u8],
     ) -> Result<usize, error::Error<T::Error>> {
-        let len = data.len().min(u16::max_value() as usize);
-        wifi.handler.get_data_buf(self.socket, &mut data[..len])
+        if self.buffer_offset >= self.buffer.len() {
+            self.buffer.clear();
+            self.buffer
+                .try_extend_from_slice(&[0; BUFFER_CAPACITY])
+                .unwrap();
+            let recv_len = wifi
+                .handler
+                .get_data_buf(self.socket, self.buffer.as_mut())?;
+            self.buffer.truncate(recv_len);
+            self.buffer_offset = 0;
+            log::debug!("fetched new buffer of len {}", self.buffer.len());
+        }
+
+        let len = data.len().min(self.buffer.len() - self.buffer_offset);
+        data[..len].copy_from_slice(&self.buffer[self.buffer_offset..self.buffer_offset + len]);
+        self.buffer_offset += len;
+        Ok(len)
     }
 
     pub fn recv_exact(

@@ -1,4 +1,5 @@
 use super::full_duplex::FullDuplexExt as _;
+use crate::encoding;
 use core::marker;
 
 pub trait SendParam {
@@ -16,20 +17,7 @@ pub trait SendParam {
     where
         S: embedded_hal::spi::FullDuplex<u8>,
     {
-        use byteorder::ByteOrder;
-        use core::convert::TryFrom;
-
-        if long {
-            let len = u16::try_from(self.len()).unwrap();
-            let mut buf = [0; 2];
-            byteorder::BigEndian::write_u16(&mut buf, len);
-            spi.send_exchange(buf[0])?;
-            spi.send_exchange(buf[1])?;
-        } else {
-            let len = u8::try_from(self.len()).unwrap();
-            spi.send_exchange(len)?;
-        }
-
+        encoding::send_len(spi, long, self.len())?;
         self.send(spi)
     }
 }
@@ -43,17 +31,7 @@ pub trait RecvParam {
     where
         S: embedded_hal::spi::FullDuplex<u8>,
     {
-        use byteorder::ByteOrder;
-
-        let len = if long {
-            let mut buf = [0; 2];
-            buf[0] = spi.recv_exchange()?;
-            buf[1] = spi.recv_exchange()?;
-            byteorder::BigEndian::read_u16(&buf) as usize
-        } else {
-            spi.recv_exchange()? as usize
-        };
-
+        let len = encoding::recv_len(spi, long)?;
         self.recv(spi, len)
     }
 }

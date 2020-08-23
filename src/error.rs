@@ -10,6 +10,7 @@ pub enum Error<E> {
     SetDnsConfig,
     SetHostname,
     Disconnect,
+    ReqHostByName,
     StartScanNetworks,
     StartClientByIp,
     StopClient,

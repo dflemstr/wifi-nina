@@ -102,7 +102,7 @@ where
 
     pub fn get_scanned_network_rssi(&mut self, network: u8) -> Result<i32, error::Error<T::Error>> {
         let send_params = (network,);
-        let mut recv_params = (param::Scalar::be(0u32),);
+        let mut recv_params = (param::Scalar::le(0u32),);
 
         self.handle_cmd(
             command::Command::GetIdxRssiCmd,
@@ -172,6 +172,35 @@ where
         let (channel,) = recv_params;
 
         Ok(channel)
+    }
+
+    pub fn request_host_by_name(&mut self, hostname: &str) -> Result<(), error::Error<T::Error>> {
+        let send_params = (param::NullTerminated::new(hostname.as_bytes()),);
+        let mut recv_params = (0u8,);
+
+        self.handle_cmd(
+            command::Command::ReqHostByNameCmd,
+            &send_params,
+            &mut recv_params,
+        )?;
+
+        let (status,) = recv_params;
+
+        if status == 1 {
+            Ok(())
+        } else {
+            Err(error::Error::ReqHostByName)
+        }
+    }
+
+    pub fn get_host_by_name(&mut self) -> Result<no_std_net::Ipv4Addr, error::Error<T::Error>> {
+        let mut recv_params = (param::Scalar::be(0u32),);
+
+        self.handle_cmd(command::Command::GetHostByNameCmd, &(), &mut recv_params)?;
+
+        let (ip,) = recv_params;
+
+        Ok(ip.into_inner().into())
     }
 
     pub fn get_network_data(&mut self) -> Result<types::NetworkData, error::Error<T::Error>> {
@@ -558,7 +587,7 @@ where
         socket: types::Socket,
         data: &[u8],
     ) -> Result<usize, error::Error<T::Error>> {
-        let send_params = (socket.0, &data);
+        let send_params = (socket.0, data);
         let mut recv_params = (param::Scalar::le(0u16),);
 
         self.handle_long_send_cmd(
