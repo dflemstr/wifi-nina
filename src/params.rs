@@ -4,7 +4,7 @@ use crate::param::SendParam;
 
 pub trait SendParams {
     fn len(&self, long: bool) -> usize {
-        self.param_len(long) + if long { 2 } else { 1 }
+        self.param_len(long) + 1
     }
 
     fn param_len(&self, long: bool) -> usize;

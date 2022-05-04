@@ -45,9 +45,18 @@ where
     fn reset(&mut self) -> Result<(), Self::Error> {
         self.cs.set_high().map_err(SpiError::ChipSelect)?;
 
-        self.reset.set_low().map_err(SpiError::Reset)?;
-        self.delay(time::Duration::from_millis(10))?;
+        #[cfg(feature = "reset-high")]
         self.reset.set_high().map_err(SpiError::Reset)?;
+        #[cfg(not(feature = "reset-high"))]
+        self.reset.set_low().map_err(SpiError::Reset)?;
+
+        self.delay(time::Duration::from_millis(10))?;
+
+        #[cfg(feature = "reset-high")]
+        self.reset.set_low().map_err(SpiError::Reset)?;
+        #[cfg(not(feature = "reset-high"))]
+        self.reset.set_high().map_err(SpiError::Reset)?;
+
         self.delay(time::Duration::from_millis(750))?;
 
         Ok(())
@@ -81,7 +90,7 @@ where
             // Pad to 4 byte boundary
             let mut total_len = send_params.len(long_send) + 3;
             while 0 != total_len % 4 {
-                Self::send_byte(spi, 0)?;
+                Self::send_byte(spi, 0xff)?;
                 total_len += 1;
             }
 
