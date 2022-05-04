@@ -45,9 +45,18 @@ where
     fn reset(&mut self) -> Result<(), Self::Error> {
         self.cs.set_high().map_err(SpiError::ChipSelect)?;
 
-        self.reset.set_low().map_err(SpiError::Reset)?;
-        self.delay(time::Duration::from_millis(10))?;
+        #[cfg(feature = "reset-high")]
         self.reset.set_high().map_err(SpiError::Reset)?;
+        #[cfg(not(feature = "reset-high"))]
+        self.reset.set_low().map_err(SpiError::Reset)?;
+
+        self.delay(time::Duration::from_millis(10))?;
+
+        #[cfg(feature = "reset-high")]
+        self.reset.set_low().map_err(SpiError::Reset)?;
+        #[cfg(not(feature = "reset-high"))]
+        self.reset.set_high().map_err(SpiError::Reset)?;
+
         self.delay(time::Duration::from_millis(750))?;
 
         Ok(())

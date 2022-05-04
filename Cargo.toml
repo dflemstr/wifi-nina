@@ -1,6 +1,6 @@
 [package]
 name = "wifi-nina"
-version = "0.1.3-alpha.0"
+version = "0.1.3-alpha.1"
 authors = ["David Flemström <david.flemstrom@gmail.com>"]
 edition = "2018"
 description = "An embedded driver for ublox NINA-W10-based WiFi boards (using ESP32), present on some Arduinos, or using the Adafruit AirLift series of chips"
@@ -20,3 +20,9 @@ log = { version = "0.4.11", default-features = false }
 nb = { version = "1.0", default-features = false }
 no-std-net = { version = "0.5.0", default-features = false }
 num_enum = { version = "0.5.1", default-features = false }
+
+[features]
+default = []
+# reset-high inverts the reset logic to go to high and then low instead of low and then high
+# this is needed on the Arduino MKR WiFi 1010 for example
+reset-high = []
